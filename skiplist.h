@@ -13,7 +13,7 @@ Description:    This file contains two key objects: Node and Skiplist.
 #include <cmath>
 #include <mutex>
 
-#define OUTPUT_FLIE "./store/DumpFile"
+#define FILE_DIR "./DumpFILE.txt"
 
 std::mutex mtx;
 std::string delimiter = ":";
@@ -109,8 +109,9 @@ class SkipList{
         int generateNodeLevel();
 
         int insertByKey(K, V);
-        int searchByKey(K);
+        int searchByKey(K, V*);
         int deleteByKey(K);
+        int changeByKey(K, V);
         int getSize();
 
         void writeToDisk();
@@ -281,7 +282,7 @@ Return values: 1 for successful search, 0 for not found.
 */
 
 template<typename K, typename V> 
-int SkipList<K, V>::searchByKey(K k) {
+int SkipList<K, V>::searchByKey(K k, V* v) {
     std::cout<< "Operation: search by key "<< k << "........." << std::endl;
     Node<K, V>* cur = _header;
 
@@ -295,10 +296,51 @@ int SkipList<K, V>::searchByKey(K k) {
 
     if (cur && cur->get_key() == k) {
         std::cout << "Key " << k << " found, value: " << cur->get_value() << std::endl;
+        *v = cur->get_value();
         return 1;
     }
     std::cout << "Key " << k << " not found."<<std::endl;
     return 0;
+}
+
+/*
+Change value function:
+Change value of node by key.
+Return values: 0 for successful change, 1 for key not found.
+*/
+
+template<typename K, typename V>
+int SkipList<K, V>::changeByKey(K k, V v){
+    std::cout << "Operation: Change value by key." << std::endl;
+    mtx.lock();
+    Node<K, V>* cur = _header;
+    Node<K, V>* update[_maxLevel+1];
+    memset(update, 0, sizeof(Node<K,V>*)*(_maxLevel+1));
+
+    for(int i=this->_currentLevel; i>=0; i--){
+        while(cur->nexts[i] != NULL && cur->nexts[i]->get_key()<k){
+            cur = cur->nexts[i];
+        }
+        update[i] = cur;
+    }
+
+     cur = cur->nexts[0];
+
+    //If key of next node does not equal to the required key, return 1.
+    if(cur==NULL || cur->get_key() != k){
+        std::cout<<"Key "<<k<<" not found!"<<std::endl;
+        mtx.unlock();
+        return 1;
+    }
+
+    //If the key is found, change it's value.
+    if(cur != NULL && cur->get_key() == k){
+        std::cout<<"Key "<< k <<" found! Value changed from "
+        << cur->get_value()<<"to " << v <<std::endl;
+        cur->set_value(v);
+    }
+    mtx.unlock();
+    return 0;    
 }
 
 /*
@@ -309,17 +351,17 @@ Write data in memeroy into file.
 template<typename K, typename V> 
 void SkipList<K, V>::writeToDisk() {
     std::cout<< "Operation: write to disk."<< std::endl;
-    _writer.open(OUTPUT_FLIE);
+    std::ofstream fout(FILE_DIR);
     Node<K, V>* node = _header->nexts[0];
 
     while (node != NULL) {
-        _writer << node->get_key() << ":" << node->get_value() << "\n";
+        fout << node->get_key() << ":" << node->get_value() << "\n";
         std::cout << node->get_key() << ":" << node->get_value() << ";\n";
         node = node->nexts[0];
     }
 
-    _writer.flush();
-    _writer.close();
+    fout.flush();
+    fout.close();
     return ;
 }
 
@@ -331,19 +373,19 @@ Read data from file.
 template<typename K, typename V> 
 void SkipList<K, V>::readFromDisk() {
     std::cout<< "Operation: read form disk."<< std::endl;
-    _reader.open(OUTPUT_FLIE);
+    std::ifstream fin(FILE_DIR);
     std::string line;
     std::string* key = new std::string();
     std::string* value = new std::string();
-    while (getline(_reader, line)) {
+    while (getline(fin, line)) {
         getKeyValueFromString(line, key, value);
         if (key->empty() || value->empty()) {
             continue;
         }
-        insertByKey(*key, *value);
+        insertByKey(stoi(*key), *value);
         std::cout << "key:" << *key << "value:" << *value << std::endl;
     }
-    _reader.close();
+    fin.close();
 }
 
 /*
