@@ -5,15 +5,27 @@ Description:    This file contains two key objects: Node and Skiplist.
                 This file declares and defines these objects as well as their members
 */
 
+#ifndef SKIPLIST_H
+#define SKIPLIST_H
+
 #include <iostream>
 #include <fstream>
-#include <cstdlib>
-#include <cstring>
 #include <string>
 #include <cmath>
 #include <mutex>
+#include <deque>
+#include <vector>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <stdio.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 
-#define FILE_DIR "./DumpFILE.txt"
+#define OUTPUT_FLIE "./store/DumpFile"
 
 std::mutex mtx;
 std::string delimiter = ":";
@@ -92,40 +104,54 @@ class SkipList{
         int _maxLevel;           //Max level of the skip list.
         int _currentLevel;       //Current level of the skip list.
         int _currentCount;       //Current number of nodes.
+        int rfd;
+        int wfd;                 //file descriptor of the database file this object uses.
         Node<K, V>* _header;     //Pointer to header node.
 
         //File operator objects
         std::ofstream _writer;
         std::ifstream _reader;
 
+        std::deque<std::string> trans_list;
+        std::string file_dir;       //each skiplist object points to a table in disk, this is it's directory
+
     private:
         void getKeyValueFromString(const std::string& str, std::string* key, std::string* value);
         bool stringValid(const std::string& str);
     
     public:
-        SkipList(int);
+        SkipList(int, const std::string& str = "./store/DumpFile");
         ~SkipList();
         Node<K, V>* create_node(K, V, int);
         int generateNodeLevel();
 
         int insertByKey(K, V);
-        int searchByKey(K, V*);
+        int searchByKey(K);
         int deleteByKey(K);
-        int changeByKey(K, V);
+        int changeByKey(K k, V v);
         int getSize();
 
         void writeToDisk();
         void readFromDisk();
 
         void display();
+
+    public:
+        void parseInput(const std::string& str);
+        std::vector<std::string> getCommand(const std::string& str);
+        void startTransaction();
+        void submitTransaction();
 };
 
 //Constructor
 template<typename K, typename V>
-SkipList<K, V>::SkipList(int maxLevel){
+SkipList<K, V>::SkipList(int maxLevel, const std::string& str){
     this->_maxLevel = maxLevel;
     this->_currentLevel = 0;
     this->_currentCount = 0;
+    this->file_dir = str;
+    this->rfd = open(str.data(), O_RDONLY | O_CREAT, 0777);
+    this->wfd = open(str.data(), O_WRONLY | O_CREAT, 0777);
 
     K k;
     V v;
@@ -142,6 +168,8 @@ SkipList<K, V>::~SkipList(){
         _reader.close();
     }
     delete _header;
+    close(rfd);
+    close(wfd);
 };
 
 template<typename K, typename V>
@@ -282,7 +310,7 @@ Return values: 1 for successful search, 0 for not found.
 */
 
 template<typename K, typename V> 
-int SkipList<K, V>::searchByKey(K k, V* v) {
+int SkipList<K, V>::searchByKey(K k) {
     std::cout<< "Operation: search by key "<< k << "........." << std::endl;
     Node<K, V>* cur = _header;
 
@@ -296,22 +324,15 @@ int SkipList<K, V>::searchByKey(K k, V* v) {
 
     if (cur && cur->get_key() == k) {
         std::cout << "Key " << k << " found, value: " << cur->get_value() << std::endl;
-        *v = cur->get_value();
         return 1;
     }
     std::cout << "Key " << k << " not found."<<std::endl;
     return 0;
 }
 
-/*
-Change value function:
-Change value of node by key.
-Return values: 0 for successful change, 1 for key not found.
-*/
-
 template<typename K, typename V>
 int SkipList<K, V>::changeByKey(K k, V v){
-    std::cout << "Operation: Change value by key." << std::endl;
+    std::cout << "Operation: Change value by key..." << std::endl;
     mtx.lock();
     Node<K, V>* cur = _header;
     Node<K, V>* update[_maxLevel+1];
@@ -324,7 +345,7 @@ int SkipList<K, V>::changeByKey(K k, V v){
         update[i] = cur;
     }
 
-     cur = cur->nexts[0];
+    cur = cur->nexts[0];
 
     //If key of next node does not equal to the required key, return 1.
     if(cur==NULL || cur->get_key() != k){
@@ -350,19 +371,22 @@ Write data in memeroy into file.
 
 template<typename K, typename V> 
 void SkipList<K, V>::writeToDisk() {
+
     std::cout<< "Operation: write to disk."<< std::endl;
-    std::ofstream fout(FILE_DIR);
+    int fl_ret = flock(this->wfd, LOCK_EX);
+    _writer.open(this->file_dir);
     Node<K, V>* node = _header->nexts[0];
 
     while (node != NULL) {
-        fout << node->get_key() << ":" << node->get_value() << "\n";
+        _writer << node->get_key() << ":" << node->get_value() << "\n";
         std::cout << node->get_key() << ":" << node->get_value() << ";\n";
         node = node->nexts[0];
     }
 
-    fout.flush();
-    fout.close();
-    return ;
+    _writer.flush();
+    _writer.close();
+    flock(this->wfd, LOCK_UN);
+    return;
 }
 
 /*
@@ -372,12 +396,13 @@ Read data from file.
 
 template<typename K, typename V> 
 void SkipList<K, V>::readFromDisk() {
-    std::cout<< "Operation: read form disk."<< std::endl;
-    std::ifstream fin(FILE_DIR);
+    std::cout<< "Operation: read from disk , with file directory: "<< this->file_dir << std::endl;
+    int rret = flock(this->rfd, LOCK_SH);
+    _reader.open(this->file_dir);
     std::string line;
     std::string* key = new std::string();
     std::string* value = new std::string();
-    while (getline(fin, line)) {
+    while (getline(_reader, line)) {
         getKeyValueFromString(line, key, value);
         if (key->empty() || value->empty()) {
             continue;
@@ -385,7 +410,9 @@ void SkipList<K, V>::readFromDisk() {
         insertByKey(stoi(*key), *value);
         std::cout << "key:" << *key << "value:" << *value << std::endl;
     }
-    fin.close();
+    _reader.close();
+    flock(this->rfd, LOCK_UN);
+    return;
 }
 
 /*
@@ -419,6 +446,7 @@ int SkipList<K, V>::getSize() {
 /*
 Related functions
 */
+
 template<typename K, typename V>
 void SkipList<K, V>::getKeyValueFromString(const std::string& str, std::string* key, std::string* value) {
 
@@ -450,3 +478,123 @@ int SkipList<K, V>::generateNodeLevel(){
     k = (k < _maxLevel) ? k : _maxLevel;
     return k;
 };
+
+template<typename K, typename V>
+void SkipList<K, V>::parseInput(const std::string& str){
+    std::vector<std::string> command = getCommand(str);
+    if(command.size() < 1){
+        std::cout << "Invalid Command!" << std::endl;
+    } else if(command[0] == "INSERT"){
+        if(command.size() < 3){
+            std::cout << "INSERT needs 2 inputs" << std::endl;
+        } else {
+            int dbRet = this->insertByKey(stoi(command[1]), command[2]);
+        }
+        
+    } else if(command[0] == "DELETE"){
+        if (command.size() < 2){
+            std::cout << "DELETE needs 2 inputs" << std::endl;
+        } else {
+            int key = stoi(command[1]);
+            int dbRet = this->deleteByKey(key);
+        }
+    } else if(command[0] == "SEARCH"){
+        if (command.size() < 2){
+            std::cout << "SEARCH needs 2 inputs" << std::endl;
+        } else {
+            int key = stoi(command[1]);
+            int dbRet = this->searchByKey(key);
+        }
+    } else if(command[0] == "CHANGE"){
+        if (command.size() < 3){
+            std::cout << "CHANGE needs 3 inputs" << std::endl;
+        } else {
+            int key = stoi(command[1]);
+            int dbRet = this->changeByKey(key, command[2]);
+        }
+    } else if(command[0] == "DISPLAY"){
+        this->display();
+    } else if(command[0] == "WRITE"){
+        writeToDisk();
+        
+    } else if(command[0] == "READ"){
+        if(this->getSize() > 0){
+            std::cout << "Their are elements in the database, do you want to save them first? [y/n]" << std::endl;
+            std::string str;
+            std::cin >>str;
+            if(str == "y"){
+                writeToDisk();
+            } else {
+                readFromDisk();
+            }
+        } else {
+           readFromDisk();
+        }
+
+    } else if(command[0] == "GET"){
+        std::cout <<this->getSize() << std::endl;
+    } else if(command[0] == "BEGIN"){
+        this->startTransaction();
+    } else {
+        std::cout << "Wrong input, please enter again..." << std::endl;
+    }
+
+
+}
+
+template<typename K, typename V>
+void SkipList<K, V>::startTransaction(){
+    std::cout << "Transaction begins..." << std::endl;
+    std::string str;
+    while(1){
+        std::cin >> str;
+        if(str == "DROP"){
+            std::cout << "Transaction dropped..." << std::endl;
+            this->trans_list.clear();
+            break;      
+        }
+
+        if(str == "SUBMIT"){
+            if(this->trans_list.size() == 0){
+                std::cout << "Transaction is empty, dropped..." << std::endl;
+                break;
+            } else {
+                this->submitTransaction();
+                break;
+            }
+        }
+
+        if(str == "BEGIN"){
+            std::cout << "Transaction is being edited..." << std::endl;
+        }
+        this->trans_list.push_front(str);
+    }
+}
+
+template<typename K, typename V>
+void SkipList<K,V>::submitTransaction(){
+    std::cout << "Transaction submitted..." << std::endl;
+    while(this->trans_list.size() >0){
+        this->parseInput(this->trans_list.back());
+        trans_list.pop_back();
+    }
+    this->writeToDisk();
+}
+
+template<typename K, typename V>
+std::vector<std::string> SkipList<K, V>::getCommand(const std::string& str){
+    std::vector<std::string> res;
+    std::string temp;
+    int pos = 0;
+    for(int i=0; i<str.size(); i++){
+        if(str[i] != ':'){
+            temp += str[i];
+        } else {
+            res.push_back(temp);
+            temp = "";
+        }
+    }
+    return res;
+}
+
+#endif
